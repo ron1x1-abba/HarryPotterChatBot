@@ -45,35 +45,49 @@ name_to_features = {k : {x : str(y) for x, y in zip(add_names, v)} for k, v in z
 tmp = {}
 morph = pymorphy2.MorphAnalyzer()
 for k, v in name_to_features.items():
-    k_new = morph.parse(k)[0]
-    if "NOUN" in k_new.tag and "anim" == k_new.tag.animacy:
-        k_new = k_new.normal_form
+    if len(k.split()) > 1:
+        to_join = []
+        for x_sp in k.split():
+            x_sp_tmp = morph.parse(x_sp)[0]
+            if "NOUN" in x_sp_tmp.tag and "anim" == x_sp_tmp.tag.animacy:
+                to_join.append(x_sp_tmp.normal_form)
+            else:
+                to_join.append(x_sp)
+        k_new = ' '.join(to_join)
     else:
-        k_new = k
+        k_new = morph.parse(k)[0]
+        if "NOUN" in k_new.tag and "anim" == k_new.tag.animacy:
+            k_new = k_new.normal_form
+        else:
+            k_new = k
     tmp[k_new] = v
+    tmp[k] = v
     a_nn = v['another_name']
     if type(a_nn) == list:
         for a_n in a_nn:
             if str(a_n) != 'nan':
+                a_n_new = morph.parse(str(a_n))[0].normal_form
                 tmp[str(a_n)] = v
+                tmp[a_n_new] = v
     else:
         if str(a_nn) != 'nan':
             a_n = a_nn.split(',')
             for aa_nn in a_n:
                 aa_nn_new = morph.parse(str(aa_nn))[0].normal_form
                 tmp[aa_nn_new] = v
+                tmp[str(aa_nn)] = v
 
 name_to_features = tmp
 
 names_sorted = sorted([k for k in name_to_features.keys()], key=len, reverse=True)
 
-descr_list = [r'кто такой', r'кто такая', r'кто такие', r'что такое', r'кто это такой', r'кто это', r'что это', r'это',
+descr_list = [r'кто такои', r'кто такая', r'кто такие', r'что такое', r'кто это такои', r'кто это', r'что это', r'это',
               r'что знаешь про', r'что думаешь про', r'что знаешь о', r'что знаешь', r'что думаешь о', r'что думаешь']
 death_list = [r'когда умер', r'когда умерла', r'в каком (году|месяце) умер', r'в каком (году|месяце) умерла',
               r'дата смерти', r'когда день смерти', r'день смерти', r'жив ли', r'умер ли', r'жив', r'умер']
 birth_list = [r'когда родился', r'когда родилась', r'в каком (году|месяце) родился', r'в каком (году|месяце) родилась',
               r'дата рождения', r'когда день рождения', r'день рождения']
-eye_list = [r'какие цветом глаза', r'какого цвета у .+ глаза', r'какой цвет глаз', r'какие глаза', r'глаза у',
+eye_list = [r'какие цветом глаза', r'какого цвета у .+ глаза', r'какои цвет глаз', r'какие глаза', r'глаза у',
             r'у .+ глаза']
 patronus_list = [r'какой патронус', r'какой патронус', r'патронус']
 wife_list = [r'как зовут жену', r'как звали жену', r'как зовут мужа', r'как звали мужа', r'муж у',
@@ -87,7 +101,7 @@ another_name_list = [r'None']
 key_to_quest = {
     'desc' : descr_list,
     'death' : death_list,
-    'date_of_birth' : birth_list,
+    'date_of_birth_y' : birth_list,
     'eye_color' : eye_list,
     'patronus' : patronus_list,
     'wife' : wife_list,
@@ -99,7 +113,9 @@ key_to_quest = {
 quest_to_key = {vv : k for k, v in key_to_quest.items() for vv in v}
 
 def find_pattern(query, answer_only_from_model=False):
-    query = query.replace('ё', 'е').replace('Ё', 'Е')
+    query = query.lower()
+    query = query.replace('ё', 'е').replace('й', 'и')
+    query = re.sub(r'[^\w\s]', '', query)
     query_for_model = query
     if answer_only_from_model:
         ans_to_ret = searcher.get_answer(query)
@@ -114,13 +130,12 @@ def find_pattern(query, answer_only_from_model=False):
         ans_tmp = ' '.join(tmp_q)
         found_name = None
         for name in names_sorted:
-            if name in ans_tmp:
+            if name in query or name in ans_tmp:
                 found_name = name
                 break
         return ans_to_ret, found_name
     found_name = None
     found_key = None
-    query = query.lower()
     tmp_q = []
     for x in query.split():
         x_morph = morph.parse(x)[0]
@@ -130,11 +145,13 @@ def find_pattern(query, answer_only_from_model=False):
             tmp_q.append(x)
     query = ' '.join(tmp_q)
     for name in names_sorted:
-        if name in query:
+        if name in query_for_model or name in query:
             found_name = name
             break
+    if found_name == query_for_model or found_name == query: # full match
+        return name_to_features[found_name]['desc'], found_name
     for q in quest_to_key.keys():
-        if re.search(q, query, re.DOTALL) is not None:
+        if re.search(q, query_for_model, re.DOTALL) is not None or re.search(q, query, re.DOTALL) is not None:
             found_key = quest_to_key[q]
             break
     if found_name is not None:
@@ -182,6 +199,7 @@ def ask_question(entity):
 
 log_dict = {}
 user_to_hash = defaultdict(lambda : [])
+u_quest_cache = {}
         
 @bot.message_handler(commands=['start', 'help', 'stop'])
 def commands_reply(message):
@@ -202,6 +220,7 @@ def commands_reply(message):
                 log_file.write('\t'.join([u_id,query,ans,d_t,'unk']) + '\n')
                 log_file.flush()
         user_to_hash.pop(u_id, None)
+        u_quest_cache.pop(u_id, None)
         bot.send_message(message.from_user.id, goodby_message)
 #         bot.register_next_step_handler(message, commands_reply)
     else:
@@ -222,6 +241,9 @@ def chatter(message):
     global ask_question
     global quest_to_key
     global name_to_features
+    global u_quest_cache
+    global log_file
+
     query = message.text
     if query in ['/start', '/help', '/stop']:
         commands_reply(message)
@@ -243,7 +265,13 @@ def chatter(message):
     if entity is not None:
         if np.random.randint(0, 100, 1)[0] % 3 == 0:
             gen_q = ask_question(entity)
-            bot.send_message(message.from_user.id, text=gen_q)
+            q_hash = hash(gen_q)
+            if message.from_user.id in u_quest_cache:
+                if q_hash not in u_quest_cache[message.from_user.id]:
+                    u_quest_cache[message.from_user.id].add(q_hash)
+                    log_file.write(log_info + '\tunk\t' + gen_q + '\n')
+                    log_file.flush()
+                    bot.send_message(message.from_user.id, text=gen_q)
     bot.register_next_step_handler(message, chatter)
 
 @bot.callback_query_handler(func=lambda call: True)
